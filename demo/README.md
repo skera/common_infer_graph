@@ -2,9 +2,15 @@
 
 demo/
 ├── base_layers.py     # 基础层实现
+
 ├── lhuc_model.py      # LHUC模型
+
 ├── ppnet_model.py     # PEPBlock模型
+
 ├── mmoe_model.py      # MMOE模型
+
 ├── mlcc_model.py      # MLCC模型
+
 ├── comxcom_model.py   # ComXCom模型
+
 └── README.md          # 项目文档
