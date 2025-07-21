@@ -1,10 +1,15 @@
 from abc import ABCMeta, abstractmethod
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 from functools import reduce
 import numpy as np
 from typing import Union
-from base_layers import Layer, naive_silu
+import tf2onnx
 import argparse
+import os
+from base_layers import Layer, naive_silu
+
+tf.disable_eager_execution()
+tf.disable_resource_variables()
 
 class SENet(Layer):
     def __init__(self, hidden_size, name='SENet', mode='Train'):
@@ -131,6 +136,59 @@ class ComXCom(Layer):
         pass
 
 
+# 导出onnx
+def export_ckpt_to_onnx(ckpt_path, pb_path, onnx_path, input_size):
+    tf.reset_default_graph()
+    input_tensor = tf.placeholder(tf.float32, shape=[None, input_size[1], input_size[2]], name="comxcom_input")
+    comxcom_layer = ComXCom(args.cross_slot_num, args.other_slot_num, args.emb_size, args.head_num)
+    raw_output = comxcom_layer(input_tensor)
+    output_tensor = tf.identity(raw_output, name="comxcom_output")  # ✅ 保证输出节点存在
+
+    saver = tf.train.Saver()
+    with tf.Session() as sess:
+        saver.restore(sess, ckpt_path)
+
+        print("\n=== Graph operations ===")
+        for op in sess.graph.get_operations():
+            print(op.name)
+    
+
+        output_node_names = ["comxcom_output"]
+
+        frozen_graph_def = tf.graph_util.convert_variables_to_constants(
+            sess, sess.graph_def, output_node_names)
+        freeze_graph_def = tf.graph_util.remove_training_nodes(frozen_graph_def)
+
+        print("\n=== Graph outputs after freeze ===")
+        for op in freeze_graph_def.node:
+            if "output" in op.name:
+                print(op.name)
+
+        with tf.gfile.GFile(pb_path, "wb") as f:
+            f.write(freeze_graph_def.SerializeToString())
+        print("✅ 成功生成冻结变量的推理图，已保存为:", pb_path)
+
+    with tf.gfile.GFile(pb_path, "rb") as f:
+        frozen_graph_def = tf.GraphDef()
+        frozen_graph_def.ParseFromString(f.read())
+
+    with tf.Graph().as_default() as graph:
+        tf.import_graph_def(frozen_graph_def, name="")
+
+    # 确认 node 名字是否存在
+    for op in graph.get_operations():
+        print(op.name)
+
+    onnx_graph = tf2onnx.tfonnx.process_tf_graph(
+        graph,
+        input_names=["comxcom_input:0"],
+        output_names=["concat:0"]
+    )
+    model_proto = onnx_graph.make_model("comxcom Model")
+    with open(onnx_path, "wb") as f:
+        f.write(model_proto.SerializeToString())
+    print(f"✅ ONNX 模型已保存为:", onnx_path)
+
 if __name__ == "__main__":
     # 解析命令行参数
     parser = argparse.ArgumentParser(description="Test ComXCom class")
@@ -139,6 +197,10 @@ if __name__ == "__main__":
     parser.add_argument("--emb_size", type=int, default=16, help="Embedding size")
     parser.add_argument("--head_num", type=int, default=8, help="Number of heads")
     parser.add_argument("--batch_size", type=int, default=1024, help="Batch size")
+    parser.add_argument("--ckpt_path", type=str, default="../model/comxcom/comxcom.ckpt")
+    parser.add_argument("--pb_path", type=str, default="../model/comxcom/comxcom.pb")
+    parser.add_argument("--onnx_path", type=str, default="../model/comxcom/comxcom.onnx")
+    parser.add_argument("--do_export", type=bool, default="true", help="是否导出 ONNX 模型")
     args = parser.parse_args()
 
     print("---------- Current model: ComXCom ----------")
@@ -148,9 +210,30 @@ if __name__ == "__main__":
     print("Head number:", args.head_num)
 
     # 创建ComXCom实例并测试
+    # comxcom_layer = ComXCom(args.cross_slot_num, args.other_slot_num, args.emb_size, args.head_num)
+    # x = tf.random.normal([args.batch_size, args.cross_slot_num + args.other_slot_num, args.emb_size])
+    # print("Input shape:", x.shape)
+    # # 调用ComXCom层
+    # output = comxcom_layer(x)
+    # print("Output shape:", output.shape)
+
+    tf.reset_default_graph()
+
+    input_placeholder = tf.placeholder(tf.float32, shape=[None, args.cross_slot_num + args.other_slot_num, args.emb_size], name="comxcom_input")
     comxcom_layer = ComXCom(args.cross_slot_num, args.other_slot_num, args.emb_size, args.head_num)
-    x = tf.random.normal([args.batch_size, args.cross_slot_num + args.other_slot_num, args.emb_size])
-    print("Input shape:", x.shape)
-    # 调用ComXCom层
-    output = comxcom_layer(x)
-    print("Output shape:", output.shape)
+    raw_output = comxcom_layer(input_placeholder)
+    output_tensor = tf.identity(raw_output, name="comxcom_output")
+    print("Output tensor shape:", output_tensor.shape)
+
+    saver = tf.train.Saver()
+    with tf.Session() as sess:
+        sess.run(tf.global_variables_initializer())
+        sess.run(output_tensor, feed_dict={
+            input_placeholder: np.random.normal(size=(args.batch_size, args.cross_slot_num + args.other_slot_num, args.emb_size))
+        })
+        os.makedirs(os.path.dirname(args.ckpt_path), exist_ok=True)
+        save_path = saver.save(sess, args.ckpt_path)
+        print("✅ 模型保存至:", save_path)
+
+    if args.do_export:
+        export_ckpt_to_onnx(args.ckpt_path, args.pb_path, args.onnx_path, [None, args.cross_slot_num + args.other_slot_num, args.emb_size])

@@ -1,10 +1,16 @@
 from abc import ABCMeta, abstractmethod
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 from functools import reduce
 import numpy as np
 from typing import Union
-from base_layers import Layer, naive_silu
+import tf2onnx
 import argparse
+import os
+from base_layers import Layer, naive_silu
+
+tf.disable_eager_execution()
+tf.disable_resource_variables()
+
 
 # SENet的全称是Squeeze-and-Excitation Network，是一种用于神经网络的注意力机制。
 class SENet(Layer):
@@ -173,6 +179,65 @@ class MLCC_V2(Layer):
         pass
 
 
+def export_ckpt_to_onnx(ckpt_path, pb_path, onnx_path, input_size):
+    tf.reset_default_graph()
+    input_tensor = tf.placeholder(tf.float32, shape=[None, input_size[1]], name="mlcc_input")
+    mlcc_layer = MLCC_V2(
+        cross_slot_num=args.cross_slot_num,
+        emb_size=args.emb_size,
+        head_num=args.head_num,
+        dmlp_act_func=args.dmlp_act_func,
+        dmlp_dim_list=args.dmlp_dim_list,
+        dmlp_dim_concat=args.dmlp_dim_concat,
+        emb_size2=args.emb_size2
+    )
+    raw_output = mlcc_layer(input_tensor)
+    output_tensor = tf.identity(raw_output, name="mlcc_output")  # ✅ 保证输出节点存在
+
+    saver = tf.train.Saver()
+    with tf.Session() as sess:
+        saver.restore(sess, ckpt_path)
+
+        print("\n=== Graph operations ===")
+        for op in sess.graph.get_operations():
+            print(op.name)
+
+        output_node_names = ["mlcc_output"]
+
+        frozen_graph_def = tf.graph_util.convert_variables_to_constants(
+            sess, sess.graph_def, output_node_names)
+        freeze_graph_def = tf.graph_util.remove_training_nodes(frozen_graph_def)
+
+        print("\n=== Graph outputs after freeze ===")
+        for op in freeze_graph_def.node:
+            if "output" in op.name:
+                print(op.name)
+
+        with tf.gfile.GFile(pb_path, "wb") as f:
+            f.write(freeze_graph_def.SerializeToString())
+        print("✅ 成功生成冻结变量的推理图，已保存为:", pb_path)
+
+    with tf.gfile.GFile(pb_path, "rb") as f:
+        frozen_graph_def = tf.GraphDef()
+        frozen_graph_def.ParseFromString(f.read())
+
+    with tf.Graph().as_default() as graph:
+        tf.import_graph_def(frozen_graph_def, name="")
+
+    # 确认 node 名字是否存在
+    for op in graph.get_operations():
+        print(op.name)
+
+    onnx_graph = tf2onnx.tfonnx.process_tf_graph(
+        graph,
+        input_names=["mlcc_input:0"],
+        output_names=["Reshape_7:0"]
+    )
+    model_proto = onnx_graph.make_model("mlcc Model")
+    with open(onnx_path, "wb") as f:
+        f.write(model_proto.SerializeToString())
+    print(f"✅ ONNX 模型已保存为:", onnx_path)
+
 if __name__ == "__main__":
     # 解析命令行参数
     parser = argparse.ArgumentParser(description="Test MLCC_V2 class")
@@ -184,6 +249,10 @@ if __name__ == "__main__":
     parser.add_argument("--dmlp_dim_concat", type=int, nargs='+', default=[0], help="Dimensions to concatenate in DMLP layers, e.g., --dmlp_dim_concat 0")
     parser.add_argument("--emb_size2", type=int, default=8, help="Second embedding size, e.g., --emb_size2 8")
     parser.add_argument("--batch_size", type=int, default=1024, help="Batch size for input data, e.g., --batch_size 32")
+    parser.add_argument("--ckpt_path", type=str, default="../model/mlcc/mlcc.ckpt")
+    parser.add_argument("--pb_path", type=str, default="../model/mlcc/mlcc.pb")
+    parser.add_argument("--onnx_path", type=str, default="../model/mlcc/mlcc.onnx")
+    parser.add_argument("--do_export", type=bool, default="true", help="是否导出 ONNX 模型")
     args = parser.parse_args()
 
     print("---------- Current model: MLCC_V2 ----------")
@@ -194,6 +263,14 @@ if __name__ == "__main__":
     print("DMLP dimension list:", args.dmlp_dim_list)
     print("DMLP dimension concat:", args.dmlp_dim_concat)
     print("Second embedding size:", args.emb_size2)
+    
+    # x = tf.random.normal([args.batch_size, args.cross_slot_num * args.emb_size])
+    # print("Input shape:", x.shape)
+    # # 调用MLCC_V2层
+    # output = mlcc_layer(x)
+    # print("Output shape:", output.shape)
+
+    tf.reset_default_graph()
 
     mlcc_layer = MLCC_V2(
         cross_slot_num=args.cross_slot_num,
@@ -204,9 +281,21 @@ if __name__ == "__main__":
         dmlp_dim_concat=args.dmlp_dim_concat,
         emb_size2=args.emb_size2
     )
-    
-    x = tf.random.normal([args.batch_size, args.cross_slot_num * args.emb_size])
-    print("Input shape:", x.shape)
-    # 调用MLCC_V2层
-    output = mlcc_layer(x)
-    print("Output shape:", output.shape)
+
+    input_placeholder = tf.placeholder(tf.float32, shape=[None, args.cross_slot_num * args.emb_size], name="mlcc_input")
+    raw_output = mlcc_layer(input_placeholder)
+    output_tensor = tf.identity(raw_output, name="mlcc_output")
+    print("Output tensor shape:", output_tensor.shape)
+
+    saver = tf.train.Saver()
+    with tf.Session() as sess:
+        sess.run(tf.global_variables_initializer())
+        sess.run(output_tensor, feed_dict={
+            input_placeholder: np.random.normal(size=(args.batch_size, args.cross_slot_num * args.emb_size))
+        })
+        os.makedirs(os.path.dirname(args.ckpt_path), exist_ok=True)
+        save_path = saver.save(sess, args.ckpt_path)
+        print("✅ 模型保存至:", save_path)
+
+    if args.do_export:
+        export_ckpt_to_onnx(args.ckpt_path, args.pb_path, args.onnx_path, [None, args.cross_slot_num * args.emb_size])
