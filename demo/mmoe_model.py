@@ -1,11 +1,15 @@
 from abc import ABCMeta, abstractmethod
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 from functools import reduce
 import numpy as np
 from typing import Union
-from base_layers import Layer, MLP, naive_silu
+import tf2onnx
 import argparse
+import os
+from base_layers import Layer, naive_silu, MLP
 
+tf.disable_eager_execution()
+tf.disable_resource_variables()
 
 class Gate_v2(Layer):
     def __init__(self, shape, name='Gate', mode='Train'):
@@ -67,7 +71,7 @@ class Tentacle_V3(Layer):
             self.experts.append(MLP(expert_hidden_size, act_last=True, act=tf.nn.relu, ln=False, name = name + '_expert_' + str(i)))
             self.lhucs.append(GluSlotwise(hidden_dim=[expert_input_size, self.slot_num], name = name + '_lhuc_' + str(i)))
 
-    @tf.function
+    # @tf.function
     def __call__(self, x, meta_x, open_drop = False, drop_rate = 0.1):
 
         # input x: [B, S*E]
@@ -80,9 +84,63 @@ class Tentacle_V3(Layer):
         gate_out = tf.expand_dims(gate_out, axis=-1)    # [B, N_expert_num, 1]
         gated_outs = expert_outs * gate_out # [B, N_expert_num, out_dim]
         return tf.reduce_sum(gated_outs, axis=1)    # [B, out_dim]
-
+        
     def dump(self, fp):
         pass
+
+
+def export_ckpt_to_onnx(ckpt_path, pb_path, onnx_path, expert_hidden_size, meta_size, expert_num):
+    tf.reset_default_graph()
+    input_tensor = tf.placeholder(tf.float32, shape=[None, expert_hidden_size[0]], name="mmoe_input")
+    meta_tensor = tf.placeholder(tf.float32, shape=[None, meta_size], name="mmoe_meta_input")
+    mmoe_layer = Tentacle_V3(expert_hidden_size, meta_size, slot_size=8, expert_num=expert_num)
+    raw_output = mmoe_layer(input_tensor, meta_tensor)
+    output_tensor = tf.identity(raw_output, name="mmoe_output")  # ✅ 保证输出节点存在
+
+    saver = tf.train.Saver()
+    with tf.Session() as sess:
+        saver.restore(sess, ckpt_path)
+
+        print("\n=== Graph operations ===")
+        for op in sess.graph.get_operations():
+            print(op.name)
+
+        output_node_names = ["mmoe_output"]
+
+        frozen_graph_def = tf.graph_util.convert_variables_to_constants(
+            sess, sess.graph_def, output_node_names)
+        freeze_graph_def = tf.graph_util.remove_training_nodes(frozen_graph_def)
+
+        print("\n=== Graph outputs after freeze ===")
+        for op in freeze_graph_def.node:
+            if "output" in op.name:
+                print(op.name)
+
+        with tf.gfile.GFile(pb_path, "wb") as f:
+            f.write(freeze_graph_def.SerializeToString())
+        print("✅ 成功生成冻结变量的推理图，已保存为:", pb_path)
+
+    with tf.gfile.GFile(pb_path, "rb") as f:
+        frozen_graph_def = tf.GraphDef()
+        frozen_graph_def.ParseFromString(f.read())
+
+    with tf.Graph().as_default() as graph:
+        tf.import_graph_def(frozen_graph_def, name="")
+
+    # 确认 node 名字是否存在
+    for op in graph.get_operations():
+        print(op.name)
+
+    onnx_graph = tf2onnx.tfonnx.process_tf_graph(
+        graph,
+        input_names=["mmoe_input:0", "mmoe_meta_input:0"],
+        output_names=["Sum:0"],
+        opset=12
+    )
+    model_proto = onnx_graph.make_model("mmoe Model")
+    with open(onnx_path, "wb") as f:
+        f.write(model_proto.SerializeToString())
+    print(f"✅ ONNX 模型已保存为:", onnx_path)
 
 
 if __name__ == "__main__":
@@ -100,6 +158,10 @@ if __name__ == "__main__":
     parser.add_argument("--expert_num", type=int, 
                         help="Number of experts, e.g., --expert_num 4",
                         default=8)
+    parser.add_argument("--ckpt_path", type=str, default="../model/mmoe/mmoe.ckpt")
+    parser.add_argument("--pb_path", type=str, default="../model/mmoe/mmoe.pb")
+    parser.add_argument("--onnx_path", type=str, default="../model/mmoe/mmoe.onnx")
+    parser.add_argument("--do_export", type=bool, default="true", help="是否导出 ONNX 模型")
     args = parser.parse_args()
 
     print("---------- Current model: Tentacle_V3 ----------")
@@ -108,13 +170,38 @@ if __name__ == "__main__":
     print("Batch size:", args.batch_size)
     print("Expert number:", args.expert_num)
 
-    # 使用命令行参数设置hidden_dim
+    # # 使用命令行参数设置hidden_dim
+    # expert_hidden_size = args.expert_hidden_size
+    # tentacle_layer = Tentacle_V3(expert_hidden_size, args.meta_size, slot_size=8, expert_num=args.expert_num)
+    # # 创建输入数据
+    # x = tf.random.normal([args.batch_size, expert_hidden_size[0]])
+    # meta_x = tf.random.normal([args.batch_size, args.meta_size])
+    # print("Input shape:", x.shape, meta_x.shape)
+    # # 计算输出
+    # output = tentacle_layer(x, meta_x)
+    # print("Output shape:", output.shape)
+
+    tf.reset_default_graph()
     expert_hidden_size = args.expert_hidden_size
+
     tentacle_layer = Tentacle_V3(expert_hidden_size, args.meta_size, slot_size=8, expert_num=args.expert_num)
-    # 创建输入数据
-    x = tf.random.normal([args.batch_size, expert_hidden_size[0]])
-    meta_x = tf.random.normal([args.batch_size, args.meta_size])
-    print("Input shape:", x.shape, meta_x.shape)
-    # 计算输出
-    output = tentacle_layer(x, meta_x)
-    print("Output shape:", output.shape)
+
+    input_placeholder = tf.placeholder(tf.float32, shape=[None, expert_hidden_size[0]], name="mmoe_input")
+    meta_placeholder = tf.placeholder(tf.float32, shape=[None, args.meta_size], name="mmoe_meta_input")
+    raw_output = tentacle_layer(input_placeholder, meta_placeholder)
+    output_tensor = tf.identity(raw_output, name="mmoe_output")
+    print("Output tensor shape:", output_tensor.shape)
+
+    saver = tf.train.Saver()
+    with tf.Session() as sess:
+        sess.run(tf.global_variables_initializer())
+        sess.run(output_tensor, feed_dict={
+            input_placeholder: np.random.normal(size=(args.batch_size, expert_hidden_size[0])),
+            meta_placeholder: np.random.normal(size=(args.batch_size, args.meta_size))
+        })
+        os.makedirs(os.path.dirname(args.ckpt_path), exist_ok=True)
+        save_path = saver.save(sess, args.ckpt_path)
+        print("✅ 模型保存至:", save_path)
+
+    if args.do_export:
+        export_ckpt_to_onnx(args.ckpt_path, args.pb_path, args.onnx_path, expert_hidden_size, args.meta_size, args.expert_num)

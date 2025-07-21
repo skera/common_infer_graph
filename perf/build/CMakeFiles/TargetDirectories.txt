@@ -1,0 +1,3 @@
+/data/app/order_large/common_infer_graph/perf/build/CMakeFiles/trt_perf.dir
+/data/app/order_large/common_infer_graph/perf/build/CMakeFiles/edit_cache.dir
+/data/app/order_large/common_infer_graph/perf/build/CMakeFiles/rebuild_cache.dir

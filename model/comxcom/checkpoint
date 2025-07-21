@@ -1,0 +1,2 @@
+model_checkpoint_path: "comxcom.ckpt"
+all_model_checkpoint_paths: "comxcom.ckpt"

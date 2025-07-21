@@ -1,0 +1,2 @@
+model_checkpoint_path: "ppnet.ckpt"
+all_model_checkpoint_paths: "ppnet.ckpt"
