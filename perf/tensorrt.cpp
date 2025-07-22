@@ -172,3 +172,4 @@ int main(int argc, char** argv) {
 // nsys profile  --trace=cuda,nvtx,cudnn -o /data/app/order_large/common_infer_graph/perf/nsys_profile/trt_mlcc_profile_b2048_view  ./trt_perf /data/app/order_large/common_infer_graph/model/mlcc/mlcc.engine 2048
 // nsys profile  --trace=cuda,nvtx,cudnn -o /data/app/order_large/common_infer_graph/perf/nsys_profile/trt_mmoe_profile_b2048_view  ./trt_perf /data/app/order_large/common_infer_graph/model/mmoe/mmoe.engine 2048
 // nsys profile  --trace=cuda,nvtx,cudnn -o /data/app/order_large/common_infer_graph/perf/nsys_profile/trt_ppnet_profile_b2048_view  ./trt_perf /data/app/order_large/common_infer_graph/model/ppnet/ppnet.engine 2048
+// nsys profile  --trace=cuda,nvtx,cudnn -o /data/app/order_large/common_infer_graph/perf/nsys_profile/trt_user_model_profile_b2048_view  ./trt_perf /data/app/order_large/common_infer_graph/model/user_model/user_model.engine 2048

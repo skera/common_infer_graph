@@ -152,3 +152,4 @@ int main(int argc, char* argv[]) {
 // ./build_engine /data/app/order_large/common_infer_graph/model/mlcc/mlcc.onnx /data/app/order_large/common_infer_graph/model/mlcc/mlcc.engine 1 2048
 // ./build_engine /data/app/order_large/common_infer_graph/model/mmoe/mmoe.onnx /data/app/order_large/common_infer_graph/model/mmoe/mmoe.engine 1 2048
 // ./build_engine /data/app/order_large/common_infer_graph/model/ppnet/ppnet.onnx /data/app/order_large/common_infer_graph/model/ppnet/ppnet.engine 1 2048
+// ./build_engine /data/app/order_large/common_infer_graph/model/user_model/user_model.onnx /data/app/order_large/common_infer_graph/model/user_model/user_model.engine 1 2048
