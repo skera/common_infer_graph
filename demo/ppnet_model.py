@@ -116,7 +116,7 @@ if __name__ == "__main__":
     print("Lhuc dimensions:", args.lhuc_dim)
     print("Batch size:", args.batch_size)
 
-    # # 使用命令行参数设置hidden_dim和lhuc_dim
+    # 使用命令行参数设置hidden_dim和lhuc_dim
     # hidden_dim = args.hidden_dim
     # lhuc_dim = args.lhuc_dim
     # pep_block_layer = PEPBlock(hidden_dim=hidden_dim, lhuc_dim=lhuc_dim, mode='train')
